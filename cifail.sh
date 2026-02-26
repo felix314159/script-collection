@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: cifail URL [OUTPUT_DIR] [--debug]
-# Example: ./cifail.sh "https://github.com/org/repo/actions/runs/123"
+# Example: cifail "https://github.com/org/repo/actions/runs/123/job/456"
 
 input_url="${1:-}"
 base_out="${2:-/tmp}"
@@ -156,15 +156,27 @@ for ((j=0; j<failing_count; j++)); do
   fi
 
   if [ -z "$err" ]; then
-    if [ -z "${log_url:-}" ]; then
-      err="no_location_header"
-    elif ! curl -fsSL "$log_url" -o "$zip_path"; then
-      err="download_failed"
-    elif ! unzip -p "$zip_path" >"$log_path" 2>/dev/null; then
-      err="unzip_failed"
-    else
+    if [ -n "${log_url:-}" ]; then
+      # Got a Location redirect — download the zip and extract
+      if ! curl -fsSL "$log_url" -o "$zip_path"; then
+        err="download_failed"
+      elif ! unzip -p "$zip_path" >"$log_path" 2>/dev/null; then
+        err="unzip_failed"
+      else
+        bytes="$(wc -c <"$log_path" | tr -d ' ')"
+        ok=true
+      fi
+    elif grep -qi '^HTTP/[0-9.]* 200' "$headers_file" 2>/dev/null; then
+      # gh followed the redirect; body is inline after the blank line
+      sed '1,/^\r\{0,1\}$/d' "$headers_file" >"$log_path"
       bytes="$(wc -c <"$log_path" | tr -d ' ')"
-      ok=true
+      if [ "$bytes" -gt 0 ]; then
+        ok=true
+      else
+        err="empty_inline_body"
+      fi
+    else
+      err="no_location_header"
     fi
   fi
 
