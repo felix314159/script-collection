@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Usage: cifail URL [OUTPUT_DIR] [--debug]
 # Example: cifail "https://github.com/org/repo/actions/runs/123/job/456"
+#
+# Also supports:
+#   - https://github.com/org/repo/runs/123456789
+#   - https://github.com/org/repo/pull/123/checks?check_run_id=123456789
 
 input_url="${1:-}"
 base_out="${2:-/tmp}"
 debug="${3:-}"
 
 if [ -z "$input_url" ]; then
-  echo "usage: cifail <github actions job-or-run url> [OUTPUT_DIR] [--debug]" >&2
+  echo "usage: cifail <github actions/check-run url> [OUTPUT_DIR] [--debug]" >&2
   exit 2
 fi
 
 if [ "${base_out:-}" = "--debug" ]; then
   debug="--debug"
-  base_out="/tmp"
+  base_out="."
 fi
 if [ "${debug:-}" = "--debug" ]; then
   set -x
@@ -39,22 +43,76 @@ _cif_sanitize() {
   echo "$1" | tr -c '[:alnum:].+_-' '_' | tr ' ' '_' | sed 's/_\{2,\}/_/g;s/^_//;s/_$//'
 }
 
-# Normalize URL to run URL and extract repo + run_id
-cleaned="${input_url%%\?*}"
-cleaned="${cleaned%%#*}"
+# Normalize URL and extract repo + run_id (or check_run_id for later resolution)
+cleaned="${input_url%%#*}"
+base_url="${cleaned%%\?*}"
 
-if [[ "$cleaned" =~ ^https://github\.com/([^/]+/[^/]+)/actions/runs/([0-9]+)(/job/[0-9]+)?$ ]]; then
+# Require bash for regex matching
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "error: cifail requires bash. Try: bash -lc 'cifail \"...\"'" >&2
+  exit 2
+fi
+
+if [[ "$base_url" =~ ^https://github\.com/([^/]+/[^/]+)/actions/runs/([0-9]+)(/job/[0-9]+)?$ ]]; then
   repo="${BASH_REMATCH[1]}"
   run_id="${BASH_REMATCH[2]}"
   run_url="https://github.com/${repo}/actions/runs/${run_id}"
+elif [[ "$base_url" =~ ^https://github\.com/([^/]+/[^/]+)/runs/([0-9]+)$ ]]; then
+  repo="${BASH_REMATCH[1]}"
+  check_run_id="${BASH_REMATCH[2]}"
+elif [[ "$base_url" =~ ^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+/checks$ ]]; then
+  repo="${BASH_REMATCH[1]}"
+  if [[ "$cleaned" =~ [\?\&]check_run_id=([0-9]+) ]]; then
+    check_run_id="${BASH_REMATCH[1]}"
+  else
+    echo "error: checks URL missing check_run_id query parameter: $input_url" >&2
+    exit 2
+  fi
 else
   echo "error: unsupported URL format: $input_url" >&2
+  echo "supported formats:" >&2
+  echo "  - https://github.com/<org>/<repo>/actions/runs/<run_id>" >&2
+  echo "  - https://github.com/<org>/<repo>/actions/runs/<run_id>/job/<job_id>" >&2
+  echo "  - https://github.com/<org>/<repo>/runs/<check_run_id>" >&2
+  echo "  - https://github.com/<org>/<repo>/pull/<pr_number>/checks?check_run_id=<check_run_id>" >&2
   exit 2
 fi
 
 # Suppress xtrace for API calls and jq on large JSON to avoid crashing
 # the terminal when --debug is used (set -x expands multi-MB variables).
 { _xtrace=false; [[ $- == *x* ]] && _xtrace=true; set +x; } 2>/dev/null
+
+# Resolve check-run URLs to Actions run IDs, or explain unsupported external checks.
+if [ -n "${check_run_id:-}" ]; then
+  check_json="$(gh api -H "Accept: application/vnd.github+json" "repos/${repo}/check-runs/${check_run_id}")"
+  check_app="$(jq -r '.app.slug // ""' <<<"$check_json")"
+  check_name="$(jq -r '.name // ""' <<<"$check_json")"
+  check_conclusion="$(jq -r '.conclusion // .status // "unknown"' <<<"$check_json")"
+  check_details="$(jq -r '.details_url // ""' <<<"$check_json")"
+  check_title="$(jq -r '.output.title // ""' <<<"$check_json")"
+  check_summary="$(jq -r '(.output.summary // "") | split("\n")[0]' <<<"$check_json")"
+
+  if [ "$check_app" != "github-actions" ]; then
+    echo "error: check run ${check_run_id} belongs to external tool '${check_app}' (${check_name})." >&2
+    echo "external tools like codecov are not supported by cifail because they are not github-based workflows and do not expose GitHub Actions job logs." >&2
+    echo "check status: ${check_conclusion}" >&2
+    [ -n "$check_title" ] && [ "$check_title" != "null" ] && echo "title: ${check_title}" >&2
+    [ -n "$check_summary" ] && [ "$check_summary" != "null" ] && echo "summary: ${check_summary}" >&2
+    [ -n "$check_details" ] && [ "$check_details" != "null" ] && echo "details: ${check_details}" >&2
+    { $_xtrace && set -x; } 2>/dev/null
+    exit 3
+  fi
+
+  if [[ "$check_details" =~ /actions/runs/([0-9]+) ]]; then
+    run_id="${BASH_REMATCH[1]}"
+    run_url="https://github.com/${repo}/actions/runs/${run_id}"
+  else
+    echo "error: unable to resolve GitHub Actions run id from check_run_id=${check_run_id}" >&2
+    [ -n "$check_details" ] && [ "$check_details" != "null" ] && echo "details: ${check_details}" >&2
+    { $_xtrace && set -x; } 2>/dev/null
+    exit 2
+  fi
+fi
 
 # Fetch run info (guard jq with //)
 run_json="$(gh api -H "Accept: application/vnd.github+json" "repos/${repo}/actions/runs/${run_id}")"
