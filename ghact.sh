@@ -18,10 +18,10 @@ set -euo pipefail
 #   - jq
 #
 # Usage:
-#   ./ghact.sh OWNER/REPO GITHUB_USERNAME HOURS
+#   ./ghact.sh OWNER/REPO[,OWNER/REPO...] GITHUB_USERNAME HOURS
 #
 # Example:
-#   ./ghact.sh felix314159/execution-specs felix314159 3
+#   ./ghact.sh felix314159/execution-specs,ethereum/hive felix314159 24
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "Error: gh is required but not installed." >&2
@@ -34,7 +34,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 if [[ $# -ne 3 ]]; then
-  echo "Usage: $0 OWNER/REPO GITHUB_USERNAME HOURS" >&2
+  echo "Usage: $0 OWNER/REPO[,OWNER/REPO...] GITHUB_USERNAME HOURS" >&2
   exit 1
 fi
 
@@ -45,6 +45,32 @@ HOURS="$3"
 if ! [[ "$HOURS" =~ ^[0-9]+$ ]]; then
   echo "Error: HOURS must be an integer." >&2
   exit 1
+fi
+
+if [[ "$OWNER_REPO" == *,* ]]; then
+  IFS=',' read -r -a OWNER_REPOS <<< "$OWNER_REPO"
+  overall_status=0
+  repo_index=0
+
+  for repo_name in "${OWNER_REPOS[@]}"; do
+    [[ -z "$repo_name" ]] && continue
+
+    if (( repo_index > 0 )); then
+      echo
+    fi
+
+    echo "================================================================================"
+    echo "Repository: ${repo_name}"
+    echo "================================================================================"
+
+    if ! "$0" "$repo_name" "$GITHUB_USER" "$HOURS"; then
+      overall_status=1
+    fi
+
+    repo_index=$((repo_index + 1))
+  done
+
+  exit "$overall_status"
 fi
 
 OWNER="${OWNER_REPO%%/*}"
