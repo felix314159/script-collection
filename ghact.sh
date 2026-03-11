@@ -18,10 +18,136 @@ set -euo pipefail
 #   - jq
 #
 # Usage:
-#   ./ghact.sh OWNER/REPO[,OWNER/REPO...] GITHUB_USERNAME HOURS
+#   ./ghact.sh OWNER/REPO[,OWNER/REPO...] GITHUB_USERNAME[,GITHUB_USERNAME...] HOURS
 #
 # Example:
 #   ./ghact.sh felix314159/execution-specs,ethereum/hive felix314159 24
+#   ./ghact.sh ethereum/execution-specs,ethereum/hive felix314159,spencer-tb 48
+
+if [[ $# -ne 3 ]]; then
+  echo "Usage: $0 OWNER/REPO[,OWNER/REPO...] GITHUB_USERNAME[,GITHUB_USERNAME...] HOURS" >&2
+  exit 1
+fi
+
+OWNER_REPO_INPUT="$1"
+GITHUB_USER_INPUT="$2"
+HOURS="$3"
+
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+USER_SECTION_COLOR=""
+REPO_SECTION_COLOR=""
+COLOR_RESET=""
+
+init_colors() {
+  local color_count
+
+  if [[ ! -t 1 ]]; then
+    return
+  fi
+
+  if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == "dumb" ]]; then
+    return
+  fi
+
+  if ! command -v tput >/dev/null 2>&1; then
+    return
+  fi
+
+  if ! color_count="$(tput colors 2>/dev/null)"; then
+    return
+  fi
+
+  if ! [[ "$color_count" =~ ^[0-9]+$ ]] || (( color_count < 8 )); then
+    return
+  fi
+
+  USER_SECTION_COLOR="$(tput setaf 2)"
+  REPO_SECTION_COLOR="$(tput setaf 3)"
+  COLOR_RESET="$(tput sgr0)"
+}
+
+split_csv_values() {
+  local input="$1"
+  local -n output_ref="$2"
+  local raw_values=()
+  local value
+
+  IFS=',' read -r -a raw_values <<< "$input"
+  output_ref=()
+
+  for value in "${raw_values[@]}"; do
+    value="$(trim_whitespace "$value")"
+    [[ -z "$value" ]] && continue
+    output_ref+=("$value")
+  done
+}
+
+validate_owner_repo() {
+  local owner_repo="$1"
+  local owner="${owner_repo%%/*}"
+  local repo="${owner_repo##*/}"
+
+  if [[ -z "$owner" || -z "$repo" || "$owner" == "$repo" ]]; then
+    echo "Error: repo must be in OWNER/REPO format." >&2
+    exit 1
+  fi
+}
+
+print_section_line() {
+  local color="$1"
+  local text="$2"
+
+  if [[ -n "$color" && -n "$COLOR_RESET" ]]; then
+    printf '%s%s%s\n' "$color" "$text" "$COLOR_RESET"
+  else
+    printf '%s\n' "$text"
+  fi
+}
+
+print_user_section() {
+  local github_user="$1"
+
+  print_section_line "$USER_SECTION_COLOR" "================================================================================"
+  print_section_line "$USER_SECTION_COLOR" "User: ${github_user}"
+  print_section_line "$USER_SECTION_COLOR" "================================================================================"
+}
+
+print_repo_section() {
+  local repo_name="$1"
+
+  print_section_line "$REPO_SECTION_COLOR" "--------------------------------------------------------------------------------"
+  print_section_line "$REPO_SECTION_COLOR" "Repository: ${repo_name}"
+  print_section_line "$REPO_SECTION_COLOR" "--------------------------------------------------------------------------------"
+}
+
+if ! [[ "$HOURS" =~ ^[0-9]+$ ]]; then
+  echo "Error: HOURS must be an integer." >&2
+  exit 1
+fi
+
+split_csv_values "$OWNER_REPO_INPUT" OWNER_REPOS
+split_csv_values "$GITHUB_USER_INPUT" GITHUB_USERS
+init_colors
+
+if [[ "${#OWNER_REPOS[@]}" -eq 0 ]]; then
+  echo "Error: at least one repo must be provided." >&2
+  exit 1
+fi
+
+for owner_repo in "${OWNER_REPOS[@]}"; do
+  validate_owner_repo "$owner_repo"
+done
+
+if [[ "${#GITHUB_USERS[@]}" -eq 0 ]]; then
+  echo "Error: at least one GitHub username must be provided." >&2
+  exit 1
+fi
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "Error: gh is required but not installed." >&2
@@ -33,53 +159,48 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ $# -ne 3 ]]; then
-  echo "Usage: $0 OWNER/REPO[,OWNER/REPO...] GITHUB_USERNAME HOURS" >&2
-  exit 1
-fi
-
-OWNER_REPO="$1"
-GITHUB_USER="$2"
-HOURS="$3"
-
-if ! [[ "$HOURS" =~ ^[0-9]+$ ]]; then
-  echo "Error: HOURS must be an integer." >&2
-  exit 1
-fi
-
-if [[ "$OWNER_REPO" == *,* ]]; then
-  IFS=',' read -r -a OWNER_REPOS <<< "$OWNER_REPO"
+if [[ "${#OWNER_REPOS[@]}" -gt 1 || "${#GITHUB_USERS[@]}" -gt 1 ]]; then
   overall_status=0
-  repo_index=0
+  user_index=0
 
-  for repo_name in "${OWNER_REPOS[@]}"; do
-    [[ -z "$repo_name" ]] && continue
-
-    if (( repo_index > 0 )); then
+  for github_user in "${GITHUB_USERS[@]}"; do
+    if (( user_index > 0 )); then
       echo
     fi
 
-    echo "================================================================================"
-    echo "Repository: ${repo_name}"
-    echo "================================================================================"
+    print_user_section "$github_user"
 
-    if ! "$0" "$repo_name" "$GITHUB_USER" "$HOURS"; then
+    repo_index=0
+    for repo_name in "${OWNER_REPOS[@]}"; do
+      if (( repo_index > 0 )); then
+        echo
+      fi
+
+      print_repo_section "$repo_name"
+
+      if ! "$0" "$repo_name" "$github_user" "$HOURS"; then
+        overall_status=1
+      fi
+
+      repo_index=$((repo_index + 1))
+    done
+
+    if (( repo_index == 0 )); then
+      echo "No repositories provided." >&2
       overall_status=1
     fi
 
-    repo_index=$((repo_index + 1))
+    user_index=$((user_index + 1))
   done
 
   exit "$overall_status"
 fi
 
+OWNER_REPO="${OWNER_REPOS[0]}"
+GITHUB_USER="${GITHUB_USERS[0]}"
+
 OWNER="${OWNER_REPO%%/*}"
 REPO="${OWNER_REPO##*/}"
-
-if [[ -z "$OWNER" || -z "$REPO" || "$OWNER" == "$REPO" ]]; then
-  echo "Error: repo must be in OWNER/REPO format." >&2
-  exit 1
-fi
 
 if ! gh auth status >/dev/null 2>&1; then
   echo "Error: gh is not authenticated. Run: gh auth login" >&2
