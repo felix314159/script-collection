@@ -64,11 +64,13 @@ trap 'rm -rf "$_tmpdir"' EXIT
 pr_meta_file="$_tmpdir/pr_meta.json"
 all_threads_file="$_tmpdir/all_threads.json"
 pr_comments_file="$_tmpdir/pr_comments.json"
+pr_reviews_file="$_tmpdir/pr_reviews.json"
 patches_file="$_tmpdir/patches.json"
 
 printf '{}' > "$pr_meta_file"
 printf '[]' > "$all_threads_file"
 printf '[]' > "$pr_comments_file"
+printf '[]' > "$pr_reviews_file"
 
 cursor="null"
 while :; do
@@ -240,12 +242,25 @@ while :; do
   c_cursor="$ec"
 done
 
+gh api "repos/$owner/$repo/pulls/$pr_number/reviews" --paginate | jq '[.[] | {
+  id: (.id | tostring),
+  author: {login: (.user.login // null)},
+  body: .body,
+  state: .state,
+  createdAt: (.submitted_at // null),
+  submittedAt: (.submitted_at // null),
+  updatedAt: (.submitted_at // null),
+  url: .html_url,
+  commitId: (.commit_id // null)
+}]' > "$pr_reviews_file"
+
 _fetch_patches "$owner" "$repo" "$pr_number" > "$patches_file"
 
 jq -n \
   --slurpfile pr "$pr_meta_file" \
   --slurpfile threads "$all_threads_file" \
   --slurpfile prComments "$pr_comments_file" \
+  --slurpfile prReviews "$pr_reviews_file" \
   --slurpfile patches "$patches_file" '
   def review_timeline($threads):
     [ $threads[]
@@ -270,6 +285,22 @@ jq -n \
         }
     ];
 
+  def summary_review_timeline($reviews):
+    [ $reviews[]
+      | {
+          kind: "reviewSummary",
+          id: .id,
+          author: (.author.login // null),
+          body: .body,
+          state: .state,
+          createdAt: (.createdAt // .submittedAt // null),
+          submittedAt: (.submittedAt // null),
+          updatedAt: .updatedAt,
+          url: .url,
+          commitId: (.commitId // null)
+        }
+    ];
+
   def issue_timeline($cs):
     [ $cs[]
       | {
@@ -287,9 +318,11 @@ jq -n \
     pr: $pr[0],
     threads: $threads[0],
     prComments: $prComments[0],
+    prReviews: $prReviews[0],
     patches: $patches[0],
     timeline: (
       review_timeline($threads[0]) +
+      summary_review_timeline($prReviews[0]) +
       issue_timeline($prComments[0]) |
       sort_by(.createdAt, .url)
     )
