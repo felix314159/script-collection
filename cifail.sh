@@ -5,6 +5,7 @@
 # Also supports:
 #   - https://github.com/org/repo/runs/123456789
 #   - https://github.com/org/repo/pull/123/checks?check_run_id=123456789
+#   - https://github.com/org/repo/pull/123
 
 input_url="${1:-}"
 base_out="${2:-/tmp}"
@@ -68,6 +69,52 @@ elif [[ "$base_url" =~ ^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+/checks$ ]]
     echo "error: checks URL missing check_run_id query parameter: $input_url" >&2
     exit 2
   fi
+elif [[ "$base_url" =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)(/[^/]*)?$ ]]; then
+  repo="${BASH_REMATCH[1]}"
+  pr_number="${BASH_REMATCH[2]}"
+  # Resolve PR to a failed workflow run via the GitHub API
+  pr_json="$(gh api -H "Accept: application/vnd.github+json" "repos/${repo}/pulls/${pr_number}")"
+  pr_head_sha="$(jq -r '.head.sha // ""' <<<"$pr_json")"
+  if [ -z "$pr_head_sha" ] || [ "$pr_head_sha" = "null" ]; then
+    echo "error: could not resolve head SHA for PR #${pr_number} in ${repo}" >&2
+    exit 2
+  fi
+  # Find failed check runs on this commit from github-actions
+  check_runs_json="$(gh api -H "Accept: application/vnd.github+json" \
+    "repos/${repo}/commits/${pr_head_sha}/check-runs?per_page=100&filter=latest" \
+    | jq '[.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "failure")]')"
+  n_failed="$(jq 'length' <<<"$check_runs_json")"
+  if [ "$n_failed" -eq 0 ]; then
+    # No failed check runs — try finding a failed workflow run via check-suites
+    suites_json="$(gh api -H "Accept: application/vnd.github+json" \
+      "repos/${repo}/commits/${pr_head_sha}/check-suites?per_page=100" \
+      | jq '[.check_suites[] | select(.app.slug == "github-actions" and .conclusion == "failure")]')"
+    n_failed_suites="$(jq 'length' <<<"$suites_json")"
+    if [ "$n_failed_suites" -eq 0 ]; then
+      echo "No failed GitHub Actions check runs found for PR #${pr_number} (head: ${pr_head_sha:0:8})" >&2
+      echo "The PR may have passed, or checks may still be running." >&2
+      exit 0
+    fi
+    # Use the first failed suite — it may not directly give us a run_id, so list its check runs
+    suite_id="$(jq -r '.[0].id' <<<"$suites_json")"
+    check_runs_json="$(gh api -H "Accept: application/vnd.github+json" \
+      "repos/${repo}/check-suites/${suite_id}/check-runs?per_page=100" \
+      | jq '[.check_runs[] | select(.conclusion == "failure")]')"
+    n_failed="$(jq 'length' <<<"$check_runs_json")"
+    if [ "$n_failed" -eq 0 ]; then
+      echo "No failed check runs found in failed suite for PR #${pr_number}" >&2
+      exit 0
+    fi
+  fi
+  # Resolve the first failed check run's details_url to an actions run_id
+  first_details="$(jq -r '.[0].details_url // ""' <<<"$check_runs_json")"
+  if [[ "$first_details" =~ /actions/runs/([0-9]+) ]]; then
+    run_id="${BASH_REMATCH[1]}"
+    run_url="https://github.com/${repo}/actions/runs/${run_id}"
+  else
+    echo "error: unable to resolve Actions run from failed check runs for PR #${pr_number}" >&2
+    exit 2
+  fi
 else
   echo "error: unsupported URL format: $input_url" >&2
   echo "supported formats:" >&2
@@ -75,6 +122,7 @@ else
   echo "  - https://github.com/<org>/<repo>/actions/runs/<run_id>/job/<job_id>" >&2
   echo "  - https://github.com/<org>/<repo>/runs/<check_run_id>" >&2
   echo "  - https://github.com/<org>/<repo>/pull/<pr_number>/checks?check_run_id=<check_run_id>" >&2
+  echo "  - https://github.com/<org>/<repo>/pull/<pr_number>" >&2
   exit 2
 fi
 
@@ -182,7 +230,7 @@ mkdir -p "$run_dir"
 
 out_jobs='[]'
 
-# Download logs for failing jobs; failure per job is recorded, not fatal
+# Download logs for failing jobs
 for ((j=0; j<failing_count; j++)); do
   # Suppress xtrace for jq on large JSON
   { _xt2=false; [[ $- == *x* ]] && _xt2=true; set +x; } 2>/dev/null
@@ -201,41 +249,45 @@ for ((j=0; j<failing_count; j++)); do
 
   { $_xt2 && set -x; } 2>/dev/null
 
-  bytes=0 ok=false err=""
+  bytes=0 ok=false
   log_url=""
+  api_stderr_file="${job_prefix}__api_stderr.txt"
 
   # Get redirect URL
   if gh api -i -H "Accept: application/vnd.github+json" \
-    "repos/${repo}/actions/jobs/${job_id}/logs" >"$headers_file" 2>/dev/null; then
+    "repos/${repo}/actions/jobs/${job_id}/logs" >"$headers_file" 2>"$api_stderr_file"; then
     log_url="$(awk 'BEGIN{IGNORECASE=1} /^location:/{print $2}' "$headers_file" | tr -d '\r')"
   else
-    # even if headers fetch fails, keep going
-    err="gh_api_logs_failed"
+    echo "error: GitHub API failed fetching logs for job ${job_id} (${job_name}):" >&2
+    cat "$api_stderr_file" >&2
+    exit 1
   fi
 
-  if [ -z "$err" ]; then
-    if [ -n "${log_url:-}" ]; then
-      # Got a Location redirect — download the zip and extract
-      if ! curl -fsSL "$log_url" -o "$zip_path"; then
-        err="download_failed"
-      elif ! unzip -p "$zip_path" >"$log_path" 2>/dev/null; then
-        err="unzip_failed"
-      else
-        bytes="$(wc -c <"$log_path" | tr -d ' ')"
-        ok=true
-      fi
-    elif grep -qi '^HTTP/[0-9.]* 200' "$headers_file" 2>/dev/null; then
-      # gh followed the redirect; body is inline after the blank line
-      sed '1,/^\r\{0,1\}$/d' "$headers_file" >"$log_path"
-      bytes="$(wc -c <"$log_path" | tr -d ' ')"
-      if [ "$bytes" -gt 0 ]; then
-        ok=true
-      else
-        err="empty_inline_body"
-      fi
+  if [ -n "${log_url:-}" ]; then
+    # Got a Location redirect — download the zip and extract
+    if ! curl -fsSL "$log_url" -o "$zip_path"; then
+      echo "error: failed to download logs for job ${job_id} (${job_name}) from redirect URL" >&2
+      exit 1
+    elif ! unzip -p "$zip_path" >"$log_path" 2>/dev/null; then
+      echo "error: failed to unzip logs for job ${job_id} (${job_name})" >&2
+      exit 1
     else
-      err="no_location_header"
+      bytes="$(wc -c <"$log_path" | tr -d ' ')"
+      ok=true
     fi
+  elif grep -qi '^HTTP/[0-9.]* 200' "$headers_file" 2>/dev/null; then
+    # gh followed the redirect; body is inline after the blank line
+    sed '1,/^\r\{0,1\}$/d' "$headers_file" >"$log_path"
+    bytes="$(wc -c <"$log_path" | tr -d ' ')"
+    if [ "$bytes" -gt 0 ]; then
+      ok=true
+    else
+      echo "error: GitHub API returned empty log body for job ${job_id} (${job_name})" >&2
+      exit 1
+    fi
+  else
+    echo "error: GitHub API returned no redirect for logs of job ${job_id} (${job_name})" >&2
+    exit 1
   fi
 
   { _xt3=false; [[ $- == *x* ]] && _xt3=true; set +x; } 2>/dev/null
@@ -249,8 +301,6 @@ for ((j=0; j<failing_count; j++)); do
     --arg log_path "$log_path" \
     --arg zip_path "$zip_path" \
     --argjson log_bytes "$bytes" \
-    --arg ok "$ok" \
-    --arg err "$err" \
     '. + [{
       job_id: $job_id,
       name: $job_name,
@@ -259,11 +309,9 @@ for ((j=0; j<failing_count; j++)); do
       started_at: $job_started,
       completed_at: $job_completed,
       logs: {
-        ok: ($ok == "true"),
         bytes: $log_bytes,
         log_path: $log_path,
-        zip_path: $zip_path,
-        error: (if $err == "" then null else $err end)
+        zip_path: $zip_path
       }
     }]' <<<"$out_jobs")"
   { $_xt3 && set -x; } 2>/dev/null
