@@ -74,6 +74,7 @@ class HTMLTextExtractor(HTMLParser):
         super().__init__(convert_charrefs=False)
         self.parts: list[str] = []
         self.onebox_depth = 0
+        self.lightbox_depth = 0
 
     def handle_starttag(self, tag: str, attrs) -> None:
         attrs_dict = dict(attrs)
@@ -90,6 +91,23 @@ class HTMLTextExtractor(HTMLParser):
             self.onebox_depth += 1
             return
 
+        if tag == "a" and "lightbox" in classes:
+            href = attrs_dict.get("href")
+            if href:
+                self.parts.append(f"\n\n{href}\n\n")
+            self.lightbox_depth = 1
+            return
+
+        if self.lightbox_depth:
+            self.lightbox_depth += 1
+            return
+
+        if tag == "img":
+            src = attrs_dict.get("src")
+            if src and "/uploads/" in src:
+                self.parts.append(f"\n\n{src}\n\n")
+            return
+
         if tag in {"br", "hr"}:
             self.parts.append("\n")
         elif tag in {"p", "div", "section", "article", "aside", "blockquote"}:
@@ -102,21 +120,25 @@ class HTMLTextExtractor(HTMLParser):
             self.onebox_depth -= 1
             return
 
+        if self.lightbox_depth:
+            self.lightbox_depth -= 1
+            return
+
         if tag in {"p", "div", "section", "article", "aside", "blockquote"}:
             self.parts.append("\n\n")
 
     def handle_data(self, data: str) -> None:
-        if self.onebox_depth:
+        if self.onebox_depth or self.lightbox_depth:
             return
         self.parts.append(data)
 
     def handle_entityref(self, name: str) -> None:
-        if self.onebox_depth:
+        if self.onebox_depth or self.lightbox_depth:
             return
         self.parts.append(f"&{name};")
 
     def handle_charref(self, name: str) -> None:
-        if self.onebox_depth:
+        if self.onebox_depth or self.lightbox_depth:
             return
         self.parts.append(f"&#{name};")
 
