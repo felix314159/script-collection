@@ -67,6 +67,22 @@ TOP_LEVEL_TOPIC_FIELDS_TO_REMOVE = {
     "word_count",
 }
 POST_STREAM_FIELDS_TO_REMOVE = {"stream"}
+VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -75,6 +91,19 @@ class HTMLTextExtractor(HTMLParser):
         self.parts: list[str] = []
         self.onebox_depth = 0
         self.lightbox_depth = 0
+        self.quote_aside_depth = 0
+        self.quote_block_depth = 0
+        self.quote_username: str | None = None
+        self.quote_line_start = True
+
+    def append_quoted_text(self, text: str) -> None:
+        for char in text:
+            if self.quote_line_start:
+                self.parts.append("> ")
+                self.quote_line_start = False
+            self.parts.append(char)
+            if char == "\n":
+                self.quote_line_start = True
 
     def handle_starttag(self, tag: str, attrs) -> None:
         attrs_dict = dict(attrs)
@@ -88,7 +117,49 @@ class HTMLTextExtractor(HTMLParser):
             return
 
         if self.onebox_depth:
-            self.onebox_depth += 1
+            if tag not in VOID_TAGS:
+                self.onebox_depth += 1
+            return
+
+        if tag == "aside" and "quote" in classes:
+            self.quote_aside_depth = 1
+            self.quote_username = attrs_dict.get("data-username")
+            if self.quote_username:
+                self.parts.append(f"\n\nQuote from {self.quote_username}:\n")
+            else:
+                self.parts.append("\n\nQuote:\n")
+            return
+
+        if self.quote_aside_depth and not self.quote_block_depth:
+            if tag == "blockquote":
+                self.quote_block_depth = 1
+                self.quote_line_start = True
+            else:
+                if tag not in VOID_TAGS:
+                    self.quote_aside_depth += 1
+            return
+
+        if tag == "blockquote":
+            self.parts.append("\n\nQuote:\n")
+            self.quote_block_depth = 1
+            self.quote_line_start = True
+            return
+
+        if self.quote_block_depth:
+            if tag == "blockquote":
+                self.quote_block_depth += 1
+            elif tag in {"br", "hr"}:
+                self.parts.append("\n")
+                self.quote_line_start = True
+            elif tag in {"p", "div", "section", "article"}:
+                if not self.quote_line_start:
+                    self.parts.append("\n")
+                self.quote_line_start = True
+            elif tag == "li":
+                if not self.quote_line_start:
+                    self.parts.append("\n")
+                self.parts.append("> - ")
+                self.quote_line_start = False
             return
 
         if tag == "a" and "lightbox" in classes:
@@ -99,7 +170,8 @@ class HTMLTextExtractor(HTMLParser):
             return
 
         if self.lightbox_depth:
-            self.lightbox_depth += 1
+            if tag not in VOID_TAGS:
+                self.lightbox_depth += 1
             return
 
         if tag == "img":
@@ -120,6 +192,24 @@ class HTMLTextExtractor(HTMLParser):
             self.onebox_depth -= 1
             return
 
+        if self.quote_block_depth:
+            if tag == "blockquote":
+                self.quote_block_depth -= 1
+                if self.quote_block_depth == 0:
+                    self.parts.append("\n\n")
+                    self.quote_line_start = True
+            elif tag in {"p", "div", "section", "article", "li"}:
+                if not self.quote_line_start:
+                    self.parts.append("\n")
+                self.quote_line_start = True
+            return
+
+        if self.quote_aside_depth:
+            self.quote_aside_depth -= 1
+            if self.quote_aside_depth == 0:
+                self.quote_username = None
+            return
+
         if self.lightbox_depth:
             self.lightbox_depth -= 1
             return
@@ -130,15 +220,32 @@ class HTMLTextExtractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self.onebox_depth or self.lightbox_depth:
             return
+        if self.quote_block_depth:
+            if not data.strip():
+                return
+            self.append_quoted_text(data)
+            return
+        if self.quote_aside_depth:
+            return
         self.parts.append(data)
 
     def handle_entityref(self, name: str) -> None:
         if self.onebox_depth or self.lightbox_depth:
             return
+        if self.quote_block_depth:
+            self.append_quoted_text(f"&{name};")
+            return
+        if self.quote_aside_depth:
+            return
         self.parts.append(f"&{name};")
 
     def handle_charref(self, name: str) -> None:
         if self.onebox_depth or self.lightbox_depth:
+            return
+        if self.quote_block_depth:
+            self.append_quoted_text(f"&#{name};")
+            return
+        if self.quote_aside_depth:
             return
         self.parts.append(f"&#{name};")
 
