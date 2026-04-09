@@ -5,6 +5,7 @@ Random helper scripts that might be useful to someone out there
 
 ### sh (might contain or be almost fully py)
 * `cifail.sh`: Give it any job URL and it will download the logs of all failed CI runs locally for efficient LLM consumption.
+* `find_long_py.sh`: List the longest .py files in any subdir descending by lines. Only shows files with 800+ lines.
 * `ghact.sh`: Get overview of anyone's recent github activity in any repo. E.g. `./ghact.sh ethereum/execution-specs,ethereum/hive felix314159,spencer-tb 5` shows all commits made by `felix314159` or `spencer-tb` in the repos `ethereum/execution-specs` or `ethereum/hive` within the past `5` hours
 * `magicians-fetchThread.sh`: Download entire ETH Magicians Thread with subset of relevant metadata for human/LLM consumption
 * `prcommits.sh`: Get a list of all commits that exist in a given PR URL and get insurance that you locally access them (useful for building LLM skill around this for accessing changes of any PR URL. For then actually accessing the changes your LLM should not `git` not the github api)
