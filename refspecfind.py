@@ -94,6 +94,13 @@ def candidate_branch_refs(
     return [line for line in output.splitlines() if line]
 
 
+def preferred_branch_ref(eip_number: str, remote: str) -> str | None:
+    """Return a preferred branch ref for EIPs with a known canonical fork."""
+    if eip_number == "7805":
+        return f"{remote}/eips/amsterdam/eip-{eip_number}"
+    return None
+
+
 def extract_fork(branch_ref: str) -> str:
     """Extract the fork segment from an EIP branch ref."""
     parts = branch_ref.split("/")
@@ -125,6 +132,9 @@ def resolve_branch_ref(
     if not matches:
         raise NoEelsBranchFoundError
     if len(matches) > 1:
+        preferred_ref = preferred_branch_ref(eip_number, remote)
+        if preferred_ref in matches:
+            return preferred_ref, extract_fork(preferred_ref)
         choices = "\n".join(f"  - {match}" for match in matches)
         raise RefspecFindError(
             f"multiple {remote} EIP branches found "
