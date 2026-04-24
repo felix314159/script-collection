@@ -13,6 +13,7 @@ Random helper scripts that might be useful to someone out there
 * `prcommitslist.sh`: Get a list of all commits that exist in a given PR URL and get insurance that you locally access them (useful for building LLM skill around this for accessing changes of any PR URL. For then actually accessing the changes your LLM should not `git` not the github api)
 * `prcommitspick.sh`: Takes PR URL or PR number and cherry-picks all commits it contains on the current branch. You have to resolve conflicts yourself shall they occur :P
 * `prreview.sh`: Give it any Github PR URL and it will create a JSON object that contains all context an LLM needs (who commented what where, who wants which modifications to which files, etc)
+* `worktreeremove.sh`: Remove all git worktrees from `/tmp/` (I think it sometimes confuses vsc source control). Supports `--dry` argument to see outcome without deleting anything.
 
 ### py
 * `refspecfind.py`: This helper script is specific to the [execution-specs repo](https://github.com/ethereum/execution-specs). It helps to keep track of an EIP development branch and the respective [EIPs repo](https://github.com/ethereum/EIPs/tree/master/EIPS) branch so that it is clear how up-to-date the current test cases are. Hash mismatch here usually means there was a specs update (in EIPs repo) but the EELS implementation of this has not been done merged yet.
