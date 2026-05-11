@@ -5,6 +5,7 @@ Random helper scripts that might be useful to someone out there
 
 ### sh (might contain or be almost fully py)
 * `cifail.sh`: Give it any job URL and it will download the logs of all failed CI runs locally for efficient LLM consumption.
+* `devnet-start.sh`: Ethpandaops runs dora explorer for devnets, this scripts allows u to check whether a given devnet (still) exists and if so, how old it is
 * `find_long_py.sh`: List the longest .py files in any subdir descending by lines. Only shows files with 800+ lines.
 * `ghact.sh`: Get overview of anyone's recent github activity in any repo. E.g. `./ghact.sh ethereum/execution-specs,ethereum/hive felix314159,spencer-tb 5` shows all commits made by `felix314159` or `spencer-tb` in the repos `ethereum/execution-specs` or `ethereum/hive` within the past `5` hours
 * `gitcompare.sh`: Compare current local branch (latest commit hash) with remote branch of same name. If you do not specify the remote branch name it will default to comparing to 'eels'. If the chosen remote does not exist you are warned. If it does exist it either prints `OK (commithash, date)` when hashes match, otherwise it will print `NOT SYNCED` and provide the commit hashes and dates for both branches you are comparing.
