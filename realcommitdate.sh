@@ -67,27 +67,16 @@ for page in 1 2 3 4 5 6 7 8 9 10; do
 done
 
 if [[ -z "$match" ]]; then
-    # Fallback: scrape the public activity page. It embeds a JSON blob with
-    # all recent pushes (including force pushes, which the events API filters
-    # out) and retains them longer than the events feed.
-    activity_html=$(curl -sL "https://github.com/$owner/$repo/activity" || true)
-    activity_json=$(echo "$activity_html" | python3 -c '
-import sys, re, json, html as htmllib
-data = sys.stdin.read()
-m = re.search(r"<script type=\"application/json\" data-target=\"react-app\.embeddedData\">(.*?)</script>", data, re.S)
-if not m:
-    sys.exit(0)
-raw = htmllib.unescape(m.group(1))
-try:
-    obj = json.loads(raw)
-    items = obj.get("payload", {}).get("activityList", {}).get("items", [])
-    print(json.dumps(items))
-except Exception:
-    pass
-' 2>/dev/null)
+    # Fallback: the official repo activity API. It reports the same pushes
+    # the events API does, plus force_pushes (which the events feed filters
+    # out) and pr_merge / branch_creation / branch_deletion entries, and it
+    # retains history longer than the ~90-day events window.
+    for page in 1 2 3 4 5 6 7 8 9 10; do
+        page_json=$(gh api -X GET "repos/$owner/$repo/activity" \
+            -f per_page=100 -f page="$page" 2>/dev/null || echo "[]")
+        [[ "$page_json" == "[]" || "$page_json" == "null" ]] && break
 
-    if [[ -n "$activity_json" && "$activity_json" != "[]" ]]; then
-        match=$(echo "$activity_json" | jq -c --arg sha "$sha" '
+        match=$(echo "$page_json" | jq -c --arg sha "$sha" '
             [ .[]
               | (.after  // "") as $a
               | (.before // "") as $b
@@ -95,18 +84,20 @@ except Exception:
               | (($b != "" and (($b | startswith($sha)) or ($sha | startswith($b))))) as $hit_before
               | select($hit_after or $hit_before)
               | {
-                  created_at: .pushedAt,
-                  actor:      (.pusher.login // "unknown"),
+                  created_at: .timestamp,
+                  actor:      (.actor.login // "unknown"),
                   ref:        .ref,
                   head:       .after,
                   before:     .before,
-                  push_type:  .pushType,
+                  push_type:  .activity_type,
                   matched:    (if $hit_after then .after else .before end),
-                  source:     "activity-page"
+                  source:     "activity-api"
                 }
             ] | first // empty
         ')
-    fi
+
+        [[ -n "$match" ]] && break
+    done
 fi
 
 if [[ -z "$match" ]]; then
