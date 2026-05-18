@@ -15,7 +15,7 @@ Random helper scripts that might be useful to someone out there
 * `prcommitslist.sh`: Get a list of all commits that exist in a given PR URL and get insurance that you locally access them (useful for building LLM skill around this for accessing changes of any PR URL. For then actually accessing the changes your LLM should not `git` not the github api)
 * `prcommitspick.sh`: Takes PR URL or PR number and cherry-picks all commits it contains on the current branch. You have to resolve conflicts yourself shall they occur :P
 * `prreview.sh`: Give it any Github PR URL and it will create a JSON object that contains all context an LLM needs (who commented what where, who wants which modifications to which files, etc)
-* `realcommitdate.sh`: Tells u whether a commit was actually pushed at the time that its git object claims (e.g. Usage: `./realcommitdate.sh https://github.com/pcaversaccio/test-spoof-commit-date/commit/262f85c2befbfe4211fba7a9a07b2c8618d588cb`)
+* `realcommitdate.sh`: Tells u whether a commit was actually pushed at the time that its git object claims it was created (with tolerances to avoid false positives, read the comments) (Example Usage: `./realcommitdate.sh https://github.com/pcaversaccio/test-spoof-commit-date/commit/262f85c2befbfe4211fba7a9a07b2c8618d588cb`)
 * `worktreeremove.sh`: Remove all git worktrees from `/tmp/` (I think it sometimes confuses vsc source control). Supports `--dry` argument to see outcome without deleting anything.
 
 ### py
