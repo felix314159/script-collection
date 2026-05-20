@@ -19,6 +19,21 @@ DEFAULT_EIPS_REPO_ROOT = Path("/home/user/Documents/EIPs")
 EIPS_REMOTE_REF = "eip/master"
 GIT_REMOTE_BRANCH_NAME = "eels"  # for me that is ethereum/execution-specs
 
+# EIPs whose per-EIP branches have been merged into forks/amsterdam.
+# For these, resolve the refspec from that fork branch instead of the
+# (no longer existing) per-EIP branches.
+MERGED_INTO_AMSTERDAM = [
+    "7708",
+    "7778",
+    "7843",
+    "7954",
+    "7976",
+    "7981",
+    "8024",
+]
+AMSTERDAM_FORK_BRANCH = "forks/amsterdam"
+AMSTERDAM_FORK_NAME = "amsterdam"
+
 # define colors
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
@@ -127,6 +142,9 @@ def resolve_branch_ref(
     """Resolve the unique EIP branch ref and its fork."""
     if branch is not None:
         return branch, extract_fork(branch)
+
+    if eip_number in MERGED_INTO_AMSTERDAM:
+        return f"{remote}/{AMSTERDAM_FORK_BRANCH}", AMSTERDAM_FORK_NAME
 
     matches = candidate_branch_refs(repo_root, eip_number, remote)
     if not matches:
