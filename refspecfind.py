@@ -32,8 +32,15 @@ MERGED_INTO_AMSTERDAM = [
     "7981",
     "8024",
 ]
-AMSTERDAM_FORK_BRANCH = "forks/amsterdam"
+
 AMSTERDAM_FORK_NAME = "amsterdam"
+BOGOTA_FORK_NAME = "bogota"
+AMSTERDAM_FORK_BRANCH = "forks/" + AMSTERDAM_FORK_NAME
+BOGOTA_FORK_BRANCH = "forks/" + BOGOTA_FORK_NAME
+
+# EIPs whose canonical per-EIP branch lives under eips/bogota/ instead of
+# the default eips/amsterdam/ resolution.
+BOGOTA_EIPS = ["7805"]
 
 # define colors
 GREEN = "\033[32m"
@@ -96,42 +103,41 @@ def fetch_remote(repo_root: Path, remote: str) -> None:
     )
 
 
-def candidate_branch_refs(
-    repo_root: Path, eip_number: str, remote: str
-) -> list[str]:
-    """Return matching EIP branch refs for the requested remote."""
-    output = run_command(
-        repo_root,
-        "git",
-        "for-each-ref",
-        "--format=%(refname:short)",
-        f"refs/remotes/{remote}/eips/*/eip-{eip_number}",
-    )
-    return [line for line in output.splitlines() if line]
-
-
-def preferred_branch_ref(eip_number: str, remote: str) -> str | None:
-    """Return a preferred branch ref for EIPs with a known canonical fork."""
-    if eip_number == "7805":
-        return f"{remote}/eips/amsterdam/eip-{eip_number}"
-    return None
-
 
 def extract_fork(branch_ref: str) -> str:
-    """Extract the fork segment from an EIP branch ref."""
+    """Extract the fork segment from an EIP or fork branch ref."""
     parts = branch_ref.split("/")
-    if "eips" not in parts:
+    fork_index = None
+    for namespace in ("eips", "forks"):
+        if namespace in parts:
+            fork_index = parts.index(namespace)
+            break
+
+    if fork_index is None:
         raise RefspecFindError(
             f"unable to determine fork from branch ref: {branch_ref}"
         )
 
-    eips_index = parts.index("eips")
     try:
-        return parts[eips_index + 1]
+        return parts[fork_index + 1]
     except IndexError as exc:
         raise RefspecFindError(
             f"unable to determine fork from branch ref: {branch_ref}"
         ) from exc
+
+
+def ensure_branch_ref_exists(repo_root: Path, branch_ref: str) -> None:
+    """Raise NoEelsBranchFoundError when the resolved branch is missing."""
+    try:
+        run_command(
+            repo_root,
+            "git",
+            "rev-parse",
+            "--verify",
+            f"{branch_ref}^{{commit}}",
+        )
+    except subprocess.CalledProcessError as exc:
+        raise NoEelsBranchFoundError from exc
 
 
 def resolve_branch_ref(
@@ -139,36 +145,31 @@ def resolve_branch_ref(
     eip_number: str,
     remote: str,
     branch: str | None,
-) -> tuple[str, str]:
-    """Resolve the unique EIP branch ref and its fork."""
+) -> str:
+    """Resolve the canonical EELS branch ref for the EIP."""
     if branch is not None:
-        return branch, extract_fork(branch)
+        ensure_branch_ref_exists(repo_root, branch)
+        return branch
+
+    if eip_number in BOGOTA_EIPS:
+        branch_ref = f"{remote}/eips/{BOGOTA_FORK_NAME}/eip-{eip_number}"
+        ensure_branch_ref_exists(repo_root, branch_ref)
+        return branch_ref
 
     if eip_number in MERGED_INTO_AMSTERDAM:
-        return f"{remote}/{AMSTERDAM_FORK_BRANCH}", AMSTERDAM_FORK_NAME
+        branch_ref = f"{remote}/{AMSTERDAM_FORK_BRANCH}"
+        ensure_branch_ref_exists(repo_root, branch_ref)
+        return branch_ref
 
-    matches = candidate_branch_refs(repo_root, eip_number, remote)
-    if not matches:
-        raise NoEelsBranchFoundError
-    if len(matches) > 1:
-        preferred_ref = preferred_branch_ref(eip_number, remote)
-        if preferred_ref in matches:
-            return preferred_ref, extract_fork(preferred_ref)
-        choices = "\n".join(f"  - {match}" for match in matches)
-        raise RefspecFindError(
-            f"multiple {remote} EIP branches found "
-            f"for EIP-{eip_number}:\n{choices}\n"
-            "rerun with --branch to choose one"
-        )
-
-    branch_ref = matches[0]
-    return branch_ref, extract_fork(branch_ref)
+    branch_ref = f"{remote}/eips/{AMSTERDAM_FORK_NAME}/eip-{eip_number}"
+    ensure_branch_ref_exists(repo_root, branch_ref)
+    return branch_ref
 
 
-def find_spec_path(
+def find_spec_path_for_fork(
     repo_root: Path, branch_ref: str, fork: str, eip_number: str
-) -> str:
-    """Locate the EIP spec.py file on the target branch."""
+) -> str | None:
+    """Locate the EIP spec.py file under one fork directory."""
     output = run_command(
         repo_root,
         "git",
@@ -186,10 +187,7 @@ def find_spec_path(
     ]
 
     if not matches:
-        raise RefspecFindError(
-            f"no spec.py found for EIP-{eip_number} under "
-            f"tests/{fork} on {branch_ref}"
-        )
+        return None
     if len(matches) > 1:
         choices = "\n".join(f"  - {match}" for match in matches)
         raise RefspecFindError(
@@ -198,6 +196,33 @@ def find_spec_path(
         )
 
     return matches[0]
+
+
+def expected_spec_forks(branch_ref: str, eip_number: str) -> list[str]:
+    """Return the ordered test fork directories to inspect for spec.py."""
+    if eip_number in BOGOTA_EIPS:
+        return [BOGOTA_FORK_NAME, AMSTERDAM_FORK_NAME]
+    return [extract_fork(branch_ref)]
+
+
+def find_spec_path(repo_root: Path, branch_ref: str, eip_number: str) -> str:
+    """Locate the EIP spec.py file on the target branch."""
+    searched_forks = []
+    for fork in expected_spec_forks(branch_ref, eip_number):
+        if fork in searched_forks:
+            continue
+        searched_forks.append(fork)
+        spec_path = find_spec_path_for_fork(
+            repo_root, branch_ref, fork, eip_number
+        )
+        if spec_path is not None:
+            return spec_path
+
+    searched = ", ".join(f"tests/{fork}" for fork in searched_forks)
+    raise RefspecFindError(
+        f"no spec.py found for EIP-{eip_number} under "
+        f"{searched} on {branch_ref}"
+    )
 
 
 def extract_reference_spec_version(
@@ -376,10 +401,8 @@ def check_eip(
 ) -> tuple[list[str], int]:
     """Check a single EIP and return its output lines and exit status."""
     try:
-        branch_ref, fork = resolve_branch_ref(
-            repo_root, eip_number, remote, branch
-        )
-        spec_path = find_spec_path(repo_root, branch_ref, fork, eip_number)
+        branch_ref = resolve_branch_ref(repo_root, eip_number, remote, branch)
+        spec_path = find_spec_path(repo_root, branch_ref, eip_number)
         eels_refspec = extract_reference_spec_version(
             repo_root, branch_ref, spec_path
         )
